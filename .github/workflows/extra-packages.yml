@@ -1,0 +1,142 @@
+name: Build winget and Store packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub release tag to package (for example v0.2.1)
+        required: true
+        type: string
+      package_set:
+        description: Which additional packages to build
+        required: true
+        type: choice
+        options:
+          - all
+          - winget
+          - msix
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extra-packages-${{ inputs.release_tag }}
+  cancel-in-progress: true
+
+jobs:
+  packages:
+    runs-on: windows-latest
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Validate tag and package version
+        id: release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PACKAGE_SET: ${{ inputs.package_set }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Expected a release tag in vMAJOR.MINOR.PATCH form, got $env:RELEASE_TAG"
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $packageVersion = (Select-String -Path Cargo.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($version -ne $packageVersion) {
+            throw "Tag version $version does not match Cargo.toml version $packageVersion"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "package_set=$env:PACKAGE_SET" >> $env:GITHUB_OUTPUT
+
+      - name: Download setup installers from the existing release
+        if: ${{ inputs.package_set == 'all' || inputs.package_set == 'winget' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          APP_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force "dist\installers" | Out-Null
+          gh release download $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --pattern "winbloat-setup-$env:APP_VERSION-*.exe" `
+            --dir "dist\installers"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not download setup installers for $env:RELEASE_TAG. Publish the main release first."
+          }
+          $expected = @("x64", "x86", "arm64")
+          foreach ($arch in $expected) {
+            $installer = Join-Path "dist\installers" "winbloat-setup-$env:APP_VERSION-$arch.exe"
+            if (-not (Test-Path -LiteralPath $installer)) {
+              throw "Release $env:RELEASE_TAG is missing installer $([System.IO.Path]::GetFileName($installer))."
+            }
+          }
+
+      - name: Create winget manifests
+        if: ${{ inputs.package_set == 'all' || inputs.package_set == 'winget' }}
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          .github\scripts\New-WingetManifest.ps1 `
+            -Version $env:APP_VERSION `
+            -Repository $env:GITHUB_REPOSITORY `
+            -InstallerPaths @{
+              x64 = "dist\installers\winbloat-setup-$env:APP_VERSION-x64.exe"
+              x86 = "dist\installers\winbloat-setup-$env:APP_VERSION-x86.exe"
+              arm64 = "dist\installers\winbloat-setup-$env:APP_VERSION-arm64.exe"
+            } `
+            -OutputPath "dist\packages\winget"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive `
+            -Path "dist\packages\winget\*" `
+            -DestinationPath "dist\packages\winbloat-winget-$env:APP_VERSION.zip" `
+            -Force
+
+      - name: Install Rust toolchain
+        if: ${{ inputs.package_set == 'all' || inputs.package_set == 'msix' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build MSIX packages
+        if: ${{ inputs.package_set == 'all' || inputs.package_set == 'msix' }}
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+          MSIX_PACKAGE_IDENTITY: ${{ vars.MSIX_PACKAGE_IDENTITY }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+        run: |
+          if (-not $env:MSIX_PACKAGE_IDENTITY -or -not $env:MSIX_PUBLISHER) {
+            throw "Configure repository variables MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER from Partner Center before building MSIX packages."
+          }
+          New-Item -ItemType Directory -Force "dist\packages\msix" | Out-Null
+          $architectures = @(
+            @{ Name = "x64"; Target = "x86_64-pc-windows-msvc" },
+            @{ Name = "x86"; Target = "i686-pc-windows-msvc" },
+            @{ Name = "arm64"; Target = "aarch64-pc-windows-msvc" }
+          )
+          foreach ($architecture in $architectures) {
+            rustup target add $architecture.Target
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo build --release --locked --target $architecture.Target --bin winbloat-gui
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            .github\scripts\New-MsixPackage.ps1 `
+              -Version $env:APP_VERSION `
+              -Identity $env:MSIX_PACKAGE_IDENTITY `
+              -Publisher $env:MSIX_PUBLISHER `
+              -Architecture $architecture.Name `
+              -ExecutablePath "target\$($architecture.Target)\release\winbloat-gui.exe" `
+              -OutputPath "dist\packages\msix\winbloat-$env:APP_VERSION-$($architecture.Name).msix"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Upload packages for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: winbloat-packages-${{ steps.release.outputs.version }}-${{ steps.release.outputs.package_set }}
+          path: dist/packages/
+          if-no-files-found: error
+          retention-days: 30
