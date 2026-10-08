@@ -3,8 +3,8 @@ use crate::format::{format_timestamp, human_size, size_tier};
 use crate::scanner;
 use crate::tree::{NONE, Node, SortKey, Tree};
 use eframe::egui::{
-    self, Align, Color32, FontId, Layout, Rect, RichText, ScrollArea, Sense, Stroke, StrokeKind,
-    Vec2,
+    self, Align, Color32, FontFamily, FontId, Layout, Rect, RichText, ScrollArea, Sense, Stroke,
+    StrokeKind, TextStyle, Vec2,
 };
 use std::collections::HashSet;
 use std::io;
@@ -15,22 +15,25 @@ use std::time::{Duration, Instant};
 
 const WINDOW_SIZE: [f32; 2] = [1440.0, 900.0];
 const MAX_TREEMAP_CHILDREN: usize = 8;
-const ACCENT: Color32 = Color32::from_rgb(74, 157, 235);
+const ACCENT: Color32 = Color32::from_rgb(0, 103, 192);
 
 pub fn run(root: &Path) -> io::Result<()> {
     let mut app = WinBloatApp::new(empty_tree(root), root.to_path_buf(), Duration::ZERO);
     app.start_scan();
+    let icon = load_app_icon()?;
+    let windows_font = load_windows_font()?;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(WINDOW_SIZE)
-            .with_min_inner_size([1000.0, 650.0]),
+            .with_min_inner_size([1120.0, 720.0])
+            .with_icon(icon),
         ..Default::default()
     };
     eframe::run_native(
         "WinBloat",
         options,
         Box::new(|creation_context| {
-            configure_style(&creation_context.egui_ctx);
+            configure_style(&creation_context.egui_ctx, windows_font);
             Ok(Box::new(app))
         }),
     )
@@ -288,35 +291,116 @@ impl WinBloatApp {
         }
     }
 
+    fn scan_parent(&mut self) {
+        if let Some(parent) = self.root.parent() {
+            self.root_input = display_root_path(parent);
+            self.start_scan();
+        }
+    }
+
+    fn expand_all(&mut self) {
+        self.expanded = self
+            .tree
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.is_dir)
+            .map(|(index, _)| index as u32)
+            .collect();
+        self.rebuild_visible();
+    }
+
+    fn copy_selected_path(&mut self, context: &egui::Context) {
+        context.copy_text(self.item_path(self.selected).display().to_string());
+        self.status = Some((true, "Path copied to clipboard.".to_string()));
+    }
+
+    fn open_selected(&mut self) {
+        let node = self.tree.nodes[self.selected as usize];
+        let path = self.item_path(self.selected);
+        match reveal_in_explorer(&path, node.is_dir) {
+            Ok(()) => self.status = Some((true, "Opened in Explorer.".to_string())),
+            Err(error) => self.status = Some((false, format!("Could not open Explorer: {error}"))),
+        }
+    }
+
     fn draw_header(&mut self, ui: &mut egui::Ui) {
         egui::Frame::new()
-            .fill(Color32::from_rgb(28, 33, 41))
-            .inner_margin(egui::Margin::symmetric(16, 12))
-            .corner_radius(8)
+            .fill(Color32::WHITE)
+            .stroke(Stroke::new(1.0, Color32::from_rgb(215, 215, 215)))
+            .inner_margin(egui::Margin::symmetric(14, 9))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.heading(RichText::new("WinBloat").strong().size(23.0));
+                    ui.label(RichText::new("WinBloat").strong().size(21.0));
+                    ui.separator();
+                    ui.menu_button("File", |ui| {
+                        if ui.button("Scan folder   Enter").clicked() {
+                            self.start_scan();
+                            ui.close();
+                        }
+                        if ui.button("Copy selected path").clicked() {
+                            self.copy_selected_path(ui.ctx());
+                            ui.close();
+                        }
+                        if ui.button("Show selected in Explorer").clicked() {
+                            self.open_selected();
+                            ui.close();
+                        }
+                    });
+                    ui.menu_button("View", |ui| {
+                        if ui.button("Expand all folders").clicked() {
+                            self.expand_all();
+                            ui.close();
+                        }
+                        if ui.button("Collapse all folders").clicked() {
+                            self.expanded.clear();
+                            self.expanded.insert(0);
+                            self.rebuild_visible();
+                            ui.close();
+                        }
+                        if ui.button("Clear filters").clicked() {
+                            self.search.clear();
+                            self.active_extension = None;
+                            self.rebuild_visible();
+                            ui.close();
+                        }
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
-                            RichText::new("DISK SPACE ANALYZER")
-                                .small()
-                                .color(Color32::from_rgb(151, 165, 182)),
+                            RichText::new(if self.scan_in_progress {
+                                "SCANNING"
+                            } else {
+                                "READ-ONLY"
+                            })
+                            .small()
+                            .color(Color32::from_rgb(90, 105, 119)),
                         );
                     });
-                    ui.add_space(18.0);
-                    ui.label("Folder");
+                });
+                ui.add_space(7.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Scan location").color(Color32::from_rgb(75, 82, 90)));
                     let path_edit = ui.add(
                         egui::TextEdit::singleline(&mut self.root_input)
                             .hint_text(r"C:\Users\you\Downloads")
-                            .desired_width(ui.available_width() - 190.0),
+                            .desired_width((ui.available_width() - 225.0).max(200.0)),
                     );
+                    #[cfg(windows)]
+                    if ui.button("Browse…").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_directory(&self.root)
+                            .pick_folder()
+                        {
+                            self.root_input = display_root_path(&path);
+                        }
+                    }
                     let scan_clicked = ui
                         .add_enabled(
                             !self.scan_in_progress,
                             egui::Button::new(if self.scan_in_progress {
                                 "Scanning…"
                             } else {
-                                "Scan folder"
+                                "Scan"
                             })
                             .fill(ACCENT),
                         )
@@ -328,19 +412,68 @@ impl WinBloatApp {
                         self.start_scan();
                     }
                 });
-                if let Some((success, message)) = &self.status {
-                    let color = if *success {
-                        Color32::from_rgb(140, 196, 156)
-                    } else {
-                        Color32::from_rgb(245, 145, 132)
-                    };
-                    ui.add_space(5.0);
-                    ui.label(RichText::new(message).color(color).small());
-                }
             });
-        ui.add_space(8.0);
+        ui.add_space(3.0);
+        let mut command = None;
+        egui::Frame::new()
+            .fill(Color32::from_rgb(250, 250, 250))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(225, 225, 225)))
+            .inner_margin(egui::Margin::symmetric(8, 5))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (label, action) in [
+                        ("↻  Rescan", "scan"),
+                        ("↑  Parent", "parent"),
+                        ("Expand all", "expand"),
+                        ("Collapse all", "collapse"),
+                        ("Copy path", "copy"),
+                        ("Show in Explorer", "explorer"),
+                    ] {
+                        if ui
+                            .add(egui::Button::new(label).frame(false))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            command = Some(action);
+                        }
+                        if action == "collapse" || action == "explorer" {
+                            ui.separator();
+                        }
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt("sort-mode")
+                            .selected_text(format!("Sort: {}", sort_label(self.sort)))
+                            .show_ui(ui, |ui| {
+                                for (sort, label) in [
+                                    (SortKey::Size, "Size"),
+                                    (SortKey::Name, "Name"),
+                                    (SortKey::Modified, "Last modified"),
+                                    (SortKey::Recent, "Last accessed"),
+                                ] {
+                                    if ui.selectable_value(&mut self.sort, sort, label).changed() {
+                                        self.rebuild_visible();
+                                    }
+                                }
+                            });
+                    });
+                });
+            });
+        match command {
+            Some("scan") => self.start_scan(),
+            Some("parent") => self.scan_parent(),
+            Some("expand") => self.expand_all(),
+            Some("collapse") => {
+                self.expanded.clear();
+                self.expanded.insert(0);
+                self.rebuild_visible();
+            }
+            Some("copy") => self.copy_selected_path(ui.ctx()),
+            Some("explorer") => self.open_selected(),
+            _ => {}
+        }
+        ui.add_space(3.0);
         ui.horizontal_wrapped(|ui| {
-            summary_card(ui, "TOTAL SIZE", human_size(self.tree.nodes[0].size));
+            summary_card(ui, "TOTAL", human_size(self.tree.nodes[0].size));
             summary_card(ui, "FILES", self.files.to_string());
             summary_card(ui, "FOLDERS", self.directories.to_string());
             summary_card(
@@ -357,25 +490,15 @@ impl WinBloatApp {
                     )
                 },
             );
-            summary_card(ui, "INDEX MEMORY", human_size(self.index_memory as u64));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    if self.scan_in_progress {
-                        RichText::new("Scanning folder…")
-                    } else {
-                        RichText::new(format!("Scan time {:.2?}", self.elapsed))
-                    }
-                    .small()
-                    .color(Color32::GRAY),
-                );
-            });
+            summary_card(ui, "INDEX", human_size(self.index_memory as u64));
         });
-        ui.add_space(8.0);
+        ui.add_space(3.0);
         ui.horizontal(|ui| {
+            ui.label("Search");
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Search names…")
-                    .desired_width(280.0),
+                    .hint_text("Filter files and folders by name")
+                    .desired_width((ui.available_width() - 380.0).max(220.0)),
             );
             let mut changed = response.changed();
             if ui.button("Clear filters").clicked() {
@@ -383,26 +506,19 @@ impl WinBloatApp {
                 self.active_extension = None;
                 changed = true;
             }
-            ui.label(RichText::new(format!("{} visible", self.visible.len())).color(Color32::GRAY));
+            ui.label(
+                RichText::new(format!("{} items", self.visible.len()))
+                    .color(Color32::from_rgb(100, 106, 112)),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let selected_sort = match self.sort {
-                    SortKey::Size => "Size",
-                    SortKey::Name => "Name",
-                    SortKey::Recent => "Last accessed",
-                    SortKey::Modified => "Last modified",
-                };
-                egui::ComboBox::from_id_salt("sort-mode")
-                    .selected_text(format!("Sort: {selected_sort}"))
-                    .show_ui(ui, |ui| {
-                        for (sort, label) in [
-                            (SortKey::Size, "Size"),
-                            (SortKey::Name, "Name"),
-                            (SortKey::Modified, "Last modified"),
-                            (SortKey::Recent, "Last accessed"),
-                        ] {
-                            changed |= ui.selectable_value(&mut self.sort, sort, label).changed();
-                        }
-                    });
+                if let Some((success, message)) = &self.status {
+                    let color = if *success {
+                        Color32::from_rgb(40, 120, 68)
+                    } else {
+                        Color32::from_rgb(177, 48, 39)
+                    };
+                    ui.label(RichText::new(message).small().color(color));
+                }
             });
             if changed {
                 self.rebuild_visible();
@@ -435,7 +551,7 @@ impl WinBloatApp {
                 );
                 ui.add_sized(
                     [64.0, 20.0],
-                    egui::Label::new(RichText::new("% scan").strong()),
+                    egui::Label::new(RichText::new("% parent").strong()),
                 );
                 ui.add_sized(
                     [54.0, 20.0],
@@ -444,6 +560,10 @@ impl WinBloatApp {
                 ui.add_sized(
                     [116.0, 20.0],
                     egui::Label::new(RichText::new("Modified").strong()),
+                );
+                ui.add_sized(
+                    [106.0, 20.0],
+                    egui::Label::new(RichText::new("Accessed").strong()),
                 );
                 ui.add_sized(
                     [76.0, 20.0],
@@ -476,7 +596,22 @@ impl WinBloatApp {
                             Vec2::new(ui.available_width().max(740.0), 22.0),
                             Layout::left_to_right(Align::Center),
                             |ui| {
-                                ui.painter().rect_filled(ui.max_rect(), 2.0, fill);
+                                let row_fill = if is_selected {
+                                    fill
+                                } else if index % 2 == 0 {
+                                    Color32::from_rgb(248, 249, 250)
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                ui.painter().rect_filled(ui.max_rect(), 2.0, row_fill);
+                                if ui.rect_contains_pointer(ui.max_rect()) && !is_selected {
+                                    ui.painter().rect_stroke(
+                                        ui.max_rect(),
+                                        0.0,
+                                        Stroke::new(1.0, Color32::from_rgb(215, 230, 243)),
+                                        StrokeKind::Inside,
+                                    );
+                                }
                                 ui.add_space((depth as f32 * 14.0).min(280.0));
                                 if node.is_dir {
                                     if is_filtered {
@@ -504,7 +639,7 @@ impl WinBloatApp {
                                 } else {
                                     ui.add_space(18.0);
                                 }
-                                let name_width = (ui.available_width() - 410.0).max(150.0);
+                                let name_width = (ui.available_width() - 510.0).max(150.0);
                                 let name = if node.is_dir {
                                     RichText::new(name).strong()
                                 } else {
@@ -525,7 +660,7 @@ impl WinBloatApp {
                                     [64.0, 20.0],
                                     egui::Label::new(format!(
                                         "{:.1}%",
-                                        analysis::share_of_root(tree, id) * 100.0
+                                        analysis::share_of_parent(tree, id) * 100.0
                                     )),
                                 );
                                 let items = if node.is_dir { tree.child_count(id) } else { 0 };
@@ -533,6 +668,10 @@ impl WinBloatApp {
                                 ui.add_sized(
                                     [116.0, 20.0],
                                     egui::Label::new(format_timestamp(node.modified)),
+                                );
+                                ui.add_sized(
+                                    [106.0, 20.0],
+                                    egui::Label::new(format_timestamp(node.accessed)),
                                 );
                                 ui.add_sized(
                                     [76.0, 20.0],
@@ -654,7 +793,8 @@ impl WinBloatApp {
             });
             let (rect, _) =
                 ui.allocate_exact_size(ui.available_size().max(Vec2::splat(60.0)), Sense::hover());
-            ui.painter().rect_filled(rect, 3.0, Color32::from_gray(28));
+            ui.painter()
+                .rect_filled(rect, 3.0, Color32::from_rgb(246, 247, 248));
             let painter = ui.painter().with_clip_rect(rect.shrink(2.0));
             let mut remaining = self.treemap_children.clone();
             let other = if remaining.len() > MAX_TREEMAP_CHILDREN {
@@ -684,38 +824,23 @@ impl WinBloatApp {
                     .max(self.tree.nodes[other_id as usize].size);
                 entries.push((None, other_bytes.max(1)));
             }
-            let total = entries
-                .iter()
-                .map(|(_, weight)| *weight)
-                .sum::<u64>()
-                .max(1);
-            let mut offset = 0.0;
             let mut hit_targets = Vec::new();
-            for (index, (id, weight)) in entries.iter().enumerate() {
-                let fraction = *weight as f32 / total as f32;
-                let child_rect = if index + 1 == entries.len() {
-                    Rect::from_min_max(
-                        egui::pos2(rect.left() + offset, rect.top()),
-                        rect.right_bottom(),
-                    )
-                } else {
-                    let next = (offset + rect.width() * fraction).min(rect.right());
-                    let child = Rect::from_min_max(
-                        egui::pos2(rect.left() + offset, rect.top()),
-                        egui::pos2(next, rect.bottom()),
-                    );
-                    offset += child.width();
-                    child
-                };
+            let weights: Vec<u64> = entries.iter().map(|(_, weight)| *weight).collect();
+            let rectangles = partition_treemap(rect, &weights);
+            for ((id, _), child_rect) in entries.iter().zip(rectangles) {
                 let Some(id) = id else {
-                    painter.rect_filled(child_rect.shrink(1.5), 2.0, Color32::from_gray(72));
+                    painter.rect_filled(
+                        child_rect.shrink(1.5),
+                        2.0,
+                        Color32::from_rgb(225, 228, 231),
+                    );
                     if child_rect.width() > 48.0 {
                         painter.text(
                             child_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             "Other items",
                             FontId::proportional(11.0),
-                            Color32::WHITE,
+                            Color32::from_rgb(75, 82, 90),
                         );
                     }
                     continue;
@@ -754,6 +879,12 @@ impl WinBloatApp {
                     .small()
                     .color(Color32::GRAY),
             );
+            ui.horizontal(|ui| {
+                ui.add_sized([75.0, 18.0], egui::Label::new("Type"));
+                ui.add_sized([48.0, 18.0], egui::Label::new("Share"));
+                ui.add_sized([72.0, 18.0], egui::Label::new("Size"));
+                ui.add_sized([44.0, 18.0], egui::Label::new("Files"));
+            });
             ui.separator();
             let max = self
                 .file_types
@@ -795,73 +926,104 @@ impl eframe::App for WinBloatApp {
         if self.scan_in_progress {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
-        egui::CentralPanel::default().show(ui, |ui| {
-            self.draw_header(ui);
-            ui.separator();
-            let size = ui.available_size();
-            let upper_height = (size.y * 0.62).max(250.0);
-            ui.allocate_ui_with_layout(
-                Vec2::new(size.x, upper_height),
-                Layout::left_to_right(Align::Min),
-                |ui| {
-                    let left_width = (ui.available_width() * 0.70).max(520.0);
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(left_width, upper_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            card_frame().show(ui, |ui| self.draw_tree(ui));
-                        },
-                    );
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), upper_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            card_frame().show(ui, |ui| self.draw_details(ui));
-                        },
-                    );
-                },
-            );
-            ui.add_space(6.0);
-            let bottom_height = (ui.available_height() - 6.0).max(150.0);
-            ui.allocate_ui_with_layout(
-                Vec2::new(ui.available_width(), bottom_height),
-                Layout::left_to_right(Align::Min),
-                |ui| {
-                    let left_width = ui.available_width() * 0.68;
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(left_width, bottom_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            card_frame().show(ui, |ui| self.draw_treemap(ui));
-                        },
-                    );
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(ui.available_width(), bottom_height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            card_frame().show(ui, |ui| self.draw_file_types(ui));
-                        },
-                    );
-                },
-            );
-        });
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(243, 243, 243))
+                    .inner_margin(egui::Margin::same(10)),
+            )
+            .show(ui, |ui| {
+                self.draw_header(ui);
+                ui.add_space(7.0);
+                let size = ui.available_size();
+                let gap = 8.0;
+                let bottom_height = (size.y * 0.38).clamp(190.0, (size.y - 230.0).max(190.0));
+                let upper_height = (size.y - bottom_height - gap).max(210.0);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(size.x, upper_height),
+                    Layout::left_to_right(Align::Min),
+                    |ui| {
+                        let width = ui.available_width();
+                        let left_width = (width * 0.70).clamp(610.0, width - 300.0);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(left_width - gap, upper_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                card_frame().show(ui, |ui| {
+                                    ui.set_min_size(ui.available_size());
+                                    self.draw_tree(ui);
+                                });
+                            },
+                        );
+                        ui.add_space(gap);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(width - left_width, upper_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                card_frame().show(ui, |ui| {
+                                    ui.set_min_size(ui.available_size());
+                                    self.draw_details(ui);
+                                });
+                            },
+                        );
+                    },
+                );
+                ui.add_space(gap);
+                ui.allocate_ui_with_layout(
+                    Vec2::new(size.x, bottom_height),
+                    Layout::left_to_right(Align::Min),
+                    |ui| {
+                        let width = ui.available_width();
+                        let left_width = width * 0.68;
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(left_width - gap, bottom_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                card_frame().show(ui, |ui| {
+                                    ui.set_min_size(ui.available_size());
+                                    self.draw_treemap(ui);
+                                });
+                            },
+                        );
+                        ui.add_space(gap);
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(width - left_width, bottom_height),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                card_frame().show(ui, |ui| {
+                                    ui.set_min_size(ui.available_size());
+                                    self.draw_file_types(ui);
+                                });
+                            },
+                        );
+                    },
+                );
+            });
     }
 }
 
 fn summary_card(ui: &mut egui::Ui, label: &str, value: String) {
     egui::Frame::new()
-        .fill(Color32::from_rgb(31, 37, 46))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(50, 59, 71)))
-        .inner_margin(egui::Margin::symmetric(12, 7))
-        .corner_radius(7)
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, Color32::from_rgb(215, 215, 215)))
+        .inner_margin(egui::Margin::symmetric(12, 6))
         .show(ui, |ui| {
             ui.label(
                 RichText::new(label)
                     .small()
-                    .color(Color32::from_rgb(151, 165, 182)),
+                    .color(Color32::from_rgb(100, 106, 112)),
             );
             ui.label(RichText::new(value).strong());
         });
+}
+
+fn sort_label(sort: SortKey) -> &'static str {
+    match sort {
+        SortKey::Size => "Size",
+        SortKey::Name => "Name",
+        SortKey::Recent => "Last accessed",
+        SortKey::Modified => "Last modified",
+    }
 }
 
 fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
@@ -885,7 +1047,7 @@ fn file_type_row(
     ui.horizontal(|ui| {
         clicked = ui
             .add_sized(
-                [92.0, 22.0],
+                [75.0, 22.0],
                 egui::Button::new(&kind.extension)
                     .selected(selected)
                     .frame(false),
@@ -896,13 +1058,14 @@ fn file_type_row(
         } else {
             kind.bytes as f64 / total as f64 * 100.0
         };
-        ui.add_sized([46.0, 20.0], egui::Label::new(format!("{share:.1}%")));
-        ui.add_sized([70.0, 20.0], egui::Label::new(human_size(kind.bytes)));
-        ui.small(format!("{}", kind.files));
+        ui.add_sized([48.0, 20.0], egui::Label::new(format!("{share:.1}%")));
+        ui.add_sized([72.0, 20.0], egui::Label::new(human_size(kind.bytes)));
+        ui.add_sized([44.0, 20.0], egui::Label::new(kind.files.to_string()));
         let fraction = kind.bytes as f32 / max as f32;
         let bar_width = ui.available_width().clamp(20.0, 90.0);
         let (rect, _) = ui.allocate_exact_size(Vec2::new(bar_width, 7.0), Sense::hover());
-        ui.painter().rect_filled(rect, 1.0, Color32::from_gray(50));
+        ui.painter()
+            .rect_filled(rect, 1.0, Color32::from_rgb(228, 231, 234));
         ui.painter().rect_filled(
             Rect::from_min_size(rect.min, Vec2::new(rect.width() * fraction, rect.height())),
             1.0,
@@ -914,23 +1077,93 @@ fn file_type_row(
 
 fn card_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(Color32::from_rgb(25, 29, 36))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(46, 53, 64)))
-        .inner_margin(egui::Margin::symmetric(12, 10))
-        .corner_radius(8)
+        .fill(Color32::WHITE)
+        .stroke(Stroke::new(1.0, Color32::from_rgb(205, 205, 205)))
+        .inner_margin(egui::Margin::symmetric(10, 8))
 }
 
-fn configure_style(context: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = Color32::from_rgb(19, 22, 28);
-    visuals.window_fill = Color32::from_rgb(25, 29, 36);
-    visuals.extreme_bg_color = Color32::from_rgb(15, 18, 23);
-    visuals.faint_bg_color = Color32::from_rgb(31, 37, 46);
+fn configure_style(context: &egui::Context, windows_font: Vec<u8>) {
+    let mut fonts = egui::FontDefinitions::default();
+    if !windows_font.is_empty() {
+        fonts.font_data.insert(
+            "windows-segoe-ui".to_string(),
+            egui::FontData::from_owned(windows_font).into(),
+        );
+        fonts
+            .families
+            .entry(FontFamily::Proportional)
+            .or_default()
+            .insert(0, "windows-segoe-ui".to_string());
+    }
+    context.set_fonts(fonts);
+    context.set_theme(egui::Theme::Light);
+
+    let mut style = (*context.style_of(egui::Theme::Light)).clone();
+    style.text_styles = [
+        (
+            TextStyle::Small,
+            FontId::new(12.0, FontFamily::Proportional),
+        ),
+        (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
+        (
+            TextStyle::Button,
+            FontId::new(14.0, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Heading,
+            FontId::new(20.0, FontFamily::Proportional),
+        ),
+        (TextStyle::Monospace, FontId::monospace(13.0)),
+    ]
+    .into();
+    style.spacing.item_spacing = Vec2::new(8.0, 6.0);
+    style.spacing.button_padding = Vec2::new(12.0, 6.0);
+    style.spacing.indent = 18.0;
+    style.visuals = egui::Visuals::light();
+    let visuals = &mut style.visuals;
+    visuals.panel_fill = Color32::from_rgb(243, 243, 243);
+    visuals.window_fill = Color32::WHITE;
+    visuals.extreme_bg_color = Color32::WHITE;
+    visuals.faint_bg_color = Color32::from_rgb(248, 248, 248);
     visuals.selection.bg_fill = ACCENT;
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(37, 44, 54);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(52, 66, 83);
+    visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(0, 86, 160));
+    visuals.widgets.inactive.bg_fill = Color32::WHITE;
+    visuals.widgets.inactive.weak_bg_fill = Color32::WHITE;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(205, 205, 205));
+    visuals.widgets.hovered.bg_fill = Color32::from_rgb(235, 243, 250);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(133, 183, 224));
     visuals.widgets.active.bg_fill = ACCENT;
-    context.set_visuals(visuals);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(243, 243, 243);
+    context.set_style_of(egui::Theme::Light, style);
+}
+
+fn load_app_icon() -> io::Result<egui::IconData> {
+    let icon = image::load_from_memory(include_bytes!("../assets/icon.ico"))
+        .map_err(|error| io::Error::other(format!("Could not load application icon: {error}")))?
+        .into_rgba8();
+    let (width, height) = icon.dimensions();
+    Ok(egui::IconData {
+        rgba: icon.into_raw(),
+        width,
+        height,
+    })
+}
+
+#[cfg(windows)]
+fn load_windows_font() -> io::Result<Vec<u8>> {
+    let windows_dir = std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into());
+    std::fs::read(PathBuf::from(windows_dir).join("Fonts").join("segoeui.ttf")).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("Could not load the Windows Segoe UI font: {error}"),
+        )
+    })
+}
+
+#[cfg(not(windows))]
+fn load_windows_font() -> io::Result<Vec<u8>> {
+    Ok(Vec::new())
 }
 
 fn file_extension(name: &str) -> String {
@@ -983,9 +1216,9 @@ fn draw_treemap_node(
     let color = size_color(node.size);
     painter.rect_filled(tile, 2.0, color);
     let stroke = if id == selected {
-        Stroke::new(2.0_f32, Color32::WHITE)
+        Stroke::new(2.0_f32, ACCENT)
     } else {
-        Stroke::new(1.0_f32, Color32::from_gray(24))
+        Stroke::new(1.0_f32, Color32::WHITE)
     };
     painter.rect_stroke(tile, 2.0, stroke, StrokeKind::Inside);
     if tile.width() > 58.0 && tile.height() > 20.0 {
@@ -993,7 +1226,7 @@ fn draw_treemap_node(
             tile.left_top() + Vec2::new(4.0, 2.0),
             egui::Align2::LEFT_TOP,
             tree.name(id),
-            FontId::proportional(11.0),
+            FontId::proportional(13.0),
             Color32::WHITE,
         );
         if tile.width() > 82.0 && tile.height() > 38.0 {
@@ -1001,7 +1234,7 @@ fn draw_treemap_node(
                 tile.left_bottom() - Vec2::new(-4.0, 3.0),
                 egui::Align2::LEFT_BOTTOM,
                 human_size(node.size),
-                FontId::proportional(10.0),
+                FontId::proportional(12.0),
                 Color32::WHITE,
             );
         }
@@ -1020,23 +1253,15 @@ fn draw_treemap_node(
         if other_bytes > 0 {
             entries.push((None, other_bytes));
         }
-        let total = entries
+        let content_rect = Rect::from_min_max(
+            egui::pos2(tile.left(), tile.top() + 20.0),
+            tile.right_bottom(),
+        );
+        let weights: Vec<u64> = entries.iter().map(|(_, weight)| *weight).collect();
+        for ((child, _), child_rect) in entries
             .iter()
-            .map(|(_, weight)| *weight)
-            .sum::<u64>()
-            .max(1);
-        let mut left = tile.left();
-        for (index, (child, weight)) in entries.iter().enumerate() {
-            let next = if index + 1 == entries.len() {
-                tile.right()
-            } else {
-                (left + tile.width() * *weight as f32 / total as f32).min(tile.right())
-            };
-            let child_rect = egui::Rect::from_min_max(
-                egui::pos2(left, tile.top() + 20.0),
-                egui::pos2(next, tile.bottom()),
-            );
-            left = next;
+            .zip(partition_treemap(content_rect, &weights))
+        {
             if let Some(child) = child {
                 draw_treemap_node(
                     painter,
@@ -1048,14 +1273,18 @@ fn draw_treemap_node(
                     hit_targets,
                 );
             } else {
-                painter.rect_filled(child_rect.shrink(1.5), 2.0, Color32::from_gray(72));
+                painter.rect_filled(
+                    child_rect.shrink(1.5),
+                    2.0,
+                    Color32::from_rgb(225, 228, 231),
+                );
                 if child_rect.width() > 48.0 {
                     painter.text(
                         child_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "Other items",
-                        FontId::proportional(10.0),
-                        Color32::WHITE,
+                        FontId::proportional(12.0),
+                        Color32::from_rgb(75, 82, 90),
                     );
                 }
             }
@@ -1065,11 +1294,102 @@ fn draw_treemap_node(
 
 fn size_color(size: u64) -> Color32 {
     match size_tier(size) {
-        3 => Color32::from_rgb(174, 64, 58),
-        2 => Color32::from_rgb(176, 135, 47),
-        1 => Color32::from_rgb(56, 135, 91),
-        _ => Color32::from_rgb(53, 112, 155),
+        3 => Color32::from_rgb(201, 91, 55),
+        2 => Color32::from_rgb(210, 157, 48),
+        1 => Color32::from_rgb(53, 139, 91),
+        _ => Color32::from_rgb(55, 119, 176),
     }
+}
+
+fn partition_treemap(rect: Rect, weights: &[u64]) -> Vec<Rect> {
+    fn split(rect: Rect, weights: &[u64], output: &mut [Rect]) {
+        if weights.len() == 1 {
+            output[0] = rect;
+            return;
+        }
+
+        let total = weights.iter().map(|weight| *weight as f64).sum::<f64>();
+        if total == 0.0 {
+            let divider = if rect.width() >= rect.height() {
+                rect.left() + rect.width() / weights.len() as f32
+            } else {
+                rect.top() + rect.height() / weights.len() as f32
+            };
+            let (first, second) = output.split_at_mut(1);
+            if rect.width() >= rect.height() {
+                split(
+                    Rect::from_min_max(rect.min, egui::pos2(divider, rect.bottom())),
+                    &weights[..1],
+                    first,
+                );
+                split(
+                    Rect::from_min_max(egui::pos2(divider, rect.top()), rect.max),
+                    &weights[1..],
+                    second,
+                );
+            } else {
+                split(
+                    Rect::from_min_max(rect.min, egui::pos2(rect.right(), divider)),
+                    &weights[..1],
+                    first,
+                );
+                split(
+                    Rect::from_min_max(egui::pos2(rect.left(), divider), rect.max),
+                    &weights[1..],
+                    second,
+                );
+            }
+            return;
+        }
+
+        let half = total / 2.0;
+        let mut left_weight = 0.0;
+        let mut split_at = 1;
+        for (index, weight) in weights.iter().enumerate().take(weights.len() - 1) {
+            left_weight += *weight as f64;
+            split_at = index + 1;
+            if left_weight >= half {
+                break;
+            }
+        }
+        let left_weight = weights[..split_at]
+            .iter()
+            .map(|weight| *weight as f64)
+            .sum::<f64>();
+        let fraction = (left_weight / total) as f32;
+        let (first, second) = output.split_at_mut(split_at);
+        if rect.width() >= rect.height() {
+            let divider = rect.left() + rect.width() * fraction;
+            split(
+                Rect::from_min_max(rect.min, egui::pos2(divider, rect.bottom())),
+                &weights[..split_at],
+                first,
+            );
+            split(
+                Rect::from_min_max(egui::pos2(divider, rect.top()), rect.max),
+                &weights[split_at..],
+                second,
+            );
+        } else {
+            let divider = rect.top() + rect.height() * fraction;
+            split(
+                Rect::from_min_max(rect.min, egui::pos2(rect.right(), divider)),
+                &weights[..split_at],
+                first,
+            );
+            split(
+                Rect::from_min_max(egui::pos2(rect.left(), divider), rect.max),
+                &weights[split_at..],
+                second,
+            );
+        }
+    }
+
+    let mut rectangles = vec![Rect::from_min_size(rect.min, Vec2::ZERO); weights.len()];
+    if !weights.is_empty() {
+        split(rect, weights, &mut rectangles);
+    }
+    rectangles
 }
 
 #[cfg(test)]
@@ -1149,5 +1469,30 @@ mod tests {
     fn extension_matching_is_case_insensitive_and_handles_extensionless_files() {
         assert_eq!(file_extension("ARCHIVE.TAR.GZ"), ".gz");
         assert_eq!(file_extension("README"), "(no extension)");
+    }
+
+    #[test]
+    fn application_icon_decodes_to_a_valid_rgba_image() {
+        let icon = load_app_icon().expect("application icon should decode");
+        assert!(icon.width >= 16);
+        assert!(icon.height >= 16);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+    }
+
+    #[test]
+    fn treemap_tiles_preserve_each_entrys_area_share() {
+        let bounds = Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(400.0, 200.0));
+        let tiles = partition_treemap(bounds, &[1, 3]);
+
+        assert_eq!(tiles.len(), 2);
+        assert!((tiles[0].area() / bounds.area() - 0.25).abs() < 0.001);
+        assert!((tiles[1].area() / bounds.area() - 0.75).abs() < 0.001);
+        assert!((tiles[0].intersect(tiles[1]).area()) == 0.0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_segoe_ui_font_is_installed_and_readable() {
+        assert!(!load_windows_font().unwrap().is_empty());
     }
 }

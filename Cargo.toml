@@ -28,9 +28,13 @@ eframe = {
     default-features = false,
     features = ["default_fonts", "glow", "x11", "wayland"],
 }
+image = { version = "0.25", default-features = false, features = ["ico"] }
 jwalk = "0.9"
 owo-colors = { version = "4", features = ["supports-colors"] }
 ratatui = "0.30"
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
 
 [build-dependencies]
 winres = "0.1"
