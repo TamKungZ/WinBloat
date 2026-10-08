@@ -112,70 +112,67 @@ impl WinBloatApp {
         }
     }
 
-    fn draw_header(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("summary").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(RichText::new("WinBloat").strong());
-                ui.label(RichText::new("Read-only disk analysis").color(Color32::LIGHT_BLUE));
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(format!("Scanned in {:.2?}", self.elapsed));
+    fn draw_header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading(RichText::new("WinBloat").strong());
+            ui.label(RichText::new("Read-only disk analysis").color(Color32::LIGHT_BLUE));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(format!("Scanned in {:.2?}", self.elapsed));
+            });
+        });
+        ui.add(egui::Label::new(self.root.display().to_string()).truncate());
+
+        ui.horizontal_wrapped(|ui| {
+            summary_card(ui, "Logical size", human_size(self.tree.nodes[0].size));
+            summary_card(ui, "Files", self.files.to_string());
+            summary_card(ui, "Directories", self.directories.to_string());
+            summary_card(
+                ui,
+                "Items/sec",
+                format!(
+                    "{:.0}",
+                    self.tree.nodes.len() as f64 / self.elapsed.as_secs_f64().max(0.001)
+                ),
+            );
+            summary_card(ui, "Index memory", human_size(self.index_memory as u64));
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Search:");
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text("File or folder name")
+                    .desired_width(250.0),
+            );
+            if response.changed() {
+                self.rebuild_visible();
+            }
+            ui.label("Sort:");
+            let selected_sort = match self.sort {
+                SortKey::Size => "Size",
+                SortKey::Name => "Name",
+                SortKey::Recent => "Last accessed",
+                SortKey::Modified => "Last modified",
+            };
+            let mut sort_changed = false;
+            egui::ComboBox::from_id_salt("sort-mode")
+                .selected_text(selected_sort)
+                .show_ui(ui, |ui| {
+                    for (sort, label) in [
+                        (SortKey::Size, "Size"),
+                        (SortKey::Name, "Name"),
+                        (SortKey::Modified, "Last modified"),
+                        (SortKey::Recent, "Last accessed"),
+                    ] {
+                        sort_changed |= ui.selectable_value(&mut self.sort, sort, label).changed();
+                    }
                 });
-            });
-            ui.add(egui::Label::new(self.root.display().to_string()).truncate());
-
-            ui.horizontal_wrapped(|ui| {
-                summary_card(ui, "Logical size", human_size(self.tree.nodes[0].size));
-                summary_card(ui, "Files", self.files.to_string());
-                summary_card(ui, "Directories", self.directories.to_string());
-                summary_card(
-                    ui,
-                    "Items/sec",
-                    format!(
-                        "{:.0}",
-                        self.tree.nodes.len() as f64 / self.elapsed.as_secs_f64().max(0.001)
-                    ),
-                );
-                summary_card(ui, "Index memory", human_size(self.index_memory as u64));
-            });
-
-            ui.horizontal(|ui| {
-                ui.label("Search:");
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("File or folder name")
-                        .desired_width(250.0),
-                );
-                if response.changed() {
-                    self.rebuild_visible();
-                }
-                ui.label("Sort:");
-                let selected_sort = match self.sort {
-                    SortKey::Size => "Size",
-                    SortKey::Name => "Name",
-                    SortKey::Recent => "Last accessed",
-                    SortKey::Modified => "Last modified",
-                };
-                let mut sort_changed = false;
-                egui::ComboBox::from_id_salt("sort-mode")
-                    .selected_text(selected_sort)
-                    .show_ui(ui, |ui| {
-                        for (sort, label) in [
-                            (SortKey::Size, "Size"),
-                            (SortKey::Name, "Name"),
-                            (SortKey::Modified, "Last modified"),
-                            (SortKey::Recent, "Last accessed"),
-                        ] {
-                            sort_changed |=
-                                ui.selectable_value(&mut self.sort, sort, label).changed();
-                        }
-                    });
-                if sort_changed {
-                    self.rebuild_visible();
-                }
-                if !self.search.is_empty() {
-                    ui.label(format!("{} matches", self.visible.len()));
-                }
-            });
+            if sort_changed {
+                self.rebuild_visible();
+            }
+            if !self.search.is_empty() {
+                ui.label(format!("{} matches", self.visible.len()));
+            }
         });
     }
 
@@ -469,9 +466,10 @@ impl WinBloatApp {
 }
 
 impl eframe::App for WinBloatApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.draw_header(ctx);
-        egui::CentralPanel::default().show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ui, |ui| {
+            self.draw_header(ui);
+            ui.separator();
             let size = ui.available_size();
             let upper_height = (size.y * 0.64).max(250.0);
             ui.allocate_ui_with_layout(
