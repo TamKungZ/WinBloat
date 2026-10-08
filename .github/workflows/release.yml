@@ -88,10 +88,6 @@ jobs:
             $targetDir = Join-Path "target" "$($architecture.Target)\release"
             $cli = Join-Path $targetDir "winbloat.exe"
             $gui = Join-Path $targetDir "winbloat-gui.exe"
-            $cliAsset = "dist\winbloat-cli-$env:APP_VERSION-$($architecture.Name).exe"
-            $guiAsset = "dist\winbloat-gui-$env:APP_VERSION-$($architecture.Name).exe"
-            Copy-Item $cli $cliAsset
-            Copy-Item $gui $guiAsset
 
             $portableDir = Join-Path $env:RUNNER_TEMP "portable-$($architecture.Name)"
             New-Item -ItemType Directory -Force $portableDir | Out-Null
@@ -110,61 +106,28 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
-      - name: Create winget manifests
-        shell: pwsh
-        env:
-          APP_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          .github\scripts\New-WingetManifest.ps1 `
-            -Version $env:APP_VERSION `
-            -Repository $env:GITHUB_REPOSITORY `
-            -InstallerPaths @{
-              x64 = "dist\winbloat-setup-$env:APP_VERSION-x64.exe"
-              x86 = "dist\winbloat-setup-$env:APP_VERSION-x86.exe"
-              arm64 = "dist\winbloat-setup-$env:APP_VERSION-arm64.exe"
-            } `
-            -OutputPath "dist\winget"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Compress-Archive -Path dist\winget\* -DestinationPath "dist\winbloat-winget-$env:APP_VERSION.zip" -Force
-
-      - name: Build Microsoft Store MSIX packages
-        shell: pwsh
-        env:
-          APP_VERSION: ${{ steps.release.outputs.version }}
-          MSIX_PACKAGE_IDENTITY: ${{ vars.MSIX_PACKAGE_IDENTITY }}
-          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
-        run: |
-          if (-not $env:MSIX_PACKAGE_IDENTITY -and -not $env:MSIX_PUBLISHER) {
-            "MSIX skipped: set repository variables MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER from Partner Center." >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "MSIX skipped. Configure both Partner Center identity variables and rerun the release workflow."
-            exit 0
-          }
-          if (-not $env:MSIX_PACKAGE_IDENTITY -or -not $env:MSIX_PUBLISHER) {
-            throw "Both MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER repository variables are required."
-          }
-
-          foreach ($architecture in @(
-            @{ Name = "x64"; Target = "x86_64-pc-windows-msvc" },
-            @{ Name = "x86"; Target = "i686-pc-windows-msvc" },
-            @{ Name = "arm64"; Target = "aarch64-pc-windows-msvc" }
-          )) {
-            .github\scripts\New-MsixPackage.ps1 `
-              -Version $env:APP_VERSION `
-              -Identity $env:MSIX_PACKAGE_IDENTITY `
-              -Publisher $env:MSIX_PUBLISHER `
-              -Architecture $architecture.Name `
-              -ExecutablePath "target\$($architecture.Target)\release\winbloat-gui.exe" `
-              -OutputPath "dist\winbloat-$env:APP_VERSION-$($architecture.Name).msix"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-          "MSIX packages created for x64, x86, and ARM64. Verify the Partner Center identity before submitting." >> $env:GITHUB_STEP_SUMMARY
-
       - name: Create checksums and GPG signatures
         shell: pwsh
         env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
           RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE }}
           RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
+          $expectedAssets = @(
+            "winbloat-portable-$env:APP_VERSION-x64.zip",
+            "winbloat-portable-$env:APP_VERSION-x86.zip",
+            "winbloat-portable-$env:APP_VERSION-arm64.zip",
+            "winbloat-setup-$env:APP_VERSION-x64.exe",
+            "winbloat-setup-$env:APP_VERSION-x86.exe",
+            "winbloat-setup-$env:APP_VERSION-arm64.exe"
+          )
+          $actualAssets = @(Get-ChildItem dist -File | ForEach-Object Name)
+          $unexpectedAssets = @($actualAssets | Where-Object { $_ -notin $expectedAssets })
+          $missingAssets = @($expectedAssets | Where-Object { $_ -notin $actualAssets })
+          if ($unexpectedAssets.Count -gt 0 -or $missingAssets.Count -gt 0) {
+            throw "Unexpected release asset set. Missing: $($missingAssets -join ', '); unexpected: $($unexpectedAssets -join ', ')"
+          }
+
           if (-not $env:RELEASE_GPG_PRIVATE_KEY) {
             throw "Set the RELEASE_GPG_PRIVATE_KEY repository secret to an armored private key before publishing."
           }

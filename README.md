@@ -4,6 +4,8 @@
 
 # WinBloat
 
+WinBloat focuses on the CLI. The GUI is an experimental extra and is not actively developed.
+
 Read-only disk usage scanner for Windows. Browse a directory tree, find large files and folders, and see size totals by file type.
 
 ```text
