@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release:
     runs-on: windows-latest
@@ -170,9 +174,22 @@ jobs:
             ForEach-Object { "$($_.Hash.ToLower())  $([System.IO.Path]::GetFileName($_.Path))" } |
             Set-Content dist\SHA256SUMS.txt
 
-          choco install gnupg --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:RELEASE_GPG_PRIVATE_KEY | gpg --batch --import
+          $gpgCommand = Get-Command gpg.exe -ErrorAction SilentlyContinue
+          if ($gpgCommand) {
+            $gpgPath = $gpgCommand.Source
+          }
+          else {
+            $gpgCandidates = @(
+              (Join-Path $env:ProgramFiles "Git\usr\bin\gpg.exe"),
+              (Join-Path $env:ProgramFiles "GnuPG\bin\gpg.exe")
+            )
+            $gpgPath = $gpgCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+            if (-not $gpgPath) {
+              throw "GPG is not available on the Windows runner; expected Git for Windows or GnuPG."
+            }
+          }
+
+          $env:RELEASE_GPG_PRIVATE_KEY | & $gpgPath --batch --import
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           $passphraseFile = Join-Path $env:RUNNER_TEMP "winbloat-gpg-passphrase"
@@ -181,7 +198,7 @@ jobs:
           try {
             Get-ChildItem dist -File | Where-Object { $_.Extension -ne ".asc" } | ForEach-Object {
               $signature = "$($_.FullName).asc"
-              gpg --batch --yes --pinentry-mode loopback --passphrase-file $passphraseFile `
+              & $gpgPath --batch --yes --pinentry-mode loopback --passphrase-file $passphraseFile `
                 --armor --detach-sign --output $signature $_.FullName
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             }
