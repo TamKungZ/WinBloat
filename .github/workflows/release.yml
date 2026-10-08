@@ -158,8 +158,8 @@ jobs:
       - name: Create checksums and GPG signatures
         shell: pwsh
         env:
-          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
-          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           if (-not $env:RELEASE_GPG_PRIVATE_KEY) {
             throw "Set the RELEASE_GPG_PRIVATE_KEY repository secret to an armored private key before publishing."
