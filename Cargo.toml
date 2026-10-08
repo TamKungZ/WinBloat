@@ -1,7 +1,7 @@
 [package]
 name = "winbloat"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 authors = ["TamKungZ_ <dev@tamkungz.me>"]
 description = "Fast and memory-efficient disk analyzer for Windows"
@@ -12,10 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.28"
-jwalk = "0.8"
+crossterm = "0.29"
+jwalk = "0.9"
 owo-colors = { version = "4", features = ["supports-colors"] }
-ratatui = "0.28"
+ratatui = "0.30"
 
 [profile.release]
 opt-level = 3
