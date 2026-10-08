@@ -12,6 +12,11 @@ winbloat --mode tui [PATH]     # Terminal interface
 winbloat --mode gui [PATH]     # Window with tree, details, and treemap
 ```
 
+<p align="center">
+  <img src="assets/screenshots/3A0A0442-7D2F-4DAE-9AE2-669A817DE405.png" height="480">
+  <img src="assets/screenshots/5DE31721-F623-45A3-8EBC-4125132CBA90.png" height="480">
+</p>
+
 Sizes are logical file sizes; allocated disk space and filesystem attributes are not collected.
 
 Licensed under the [MIT License](LICENSE).
