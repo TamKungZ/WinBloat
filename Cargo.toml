@@ -1,14 +1,24 @@
 [package]
 name = "winbloat"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 authors = ["TamKungZ_ <dev@tamkungz.me>"]
 description = "Fast and memory-efficient disk analyzer for Windows"
+default-run = "winbloat"
+homepage = "https://github.com/TamKungZ/WinBloat"
+repository = "https://github.com/TamKungZ/WinBloat"
+readme = "README.md"
+keywords = ["disk-usage", "windows", "filesystem", "analyzer"]
+categories = ["command-line-utilities", "filesystem"]
 
 [[bin]]
 name = "winbloat"
 path = "src/main.rs"
+
+[[bin]]
+name = "winbloat-gui"
+path = "src/gui_main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
@@ -21,6 +31,9 @@ eframe = {
 jwalk = "0.9"
 owo-colors = { version = "4", features = ["supports-colors"] }
 ratatui = "0.30"
+
+[build-dependencies]
+winres = "0.1"
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate version and read release notes
+        id: release
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $packageVersion = (Select-String -Path Cargo.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($version -ne $packageVersion) {
+            throw "Tag version $version does not match Cargo.toml version $packageVersion"
+          }
+
+          $changelog = Get-Content CHANGELOG.md -Raw
+          $pattern = '(?ms)^## \[' + [regex]::Escape($version) + '\].*?(?=^## \[|\z)'
+          $notes = [regex]::Match($changelog, $pattern).Value.Trim()
+          if (-not $notes) {
+            throw "CHANGELOG.md has no release section for $version"
+          }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "body<<RELEASE_NOTES" >> $env:GITHUB_OUTPUT
+          $notes >> $env:GITHUB_OUTPUT
+          "RELEASE_NOTES" >> $env:GITHUB_OUTPUT
+
+      - name: Test and build
+        shell: pwsh
+        run: |
+          cargo test --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo build --release --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\winbloat.exe dist\winbloat.exe
+          Copy-Item target\release\winbloat-gui.exe dist\winbloat-gui.exe
+
+      - name: Build installer
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          choco install innosetup --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" | Select-Object -First 1
+          if (-not $iscc) { throw "Inno Setup compiler was not found after installation." }
+          & $iscc.FullName installer\winbloat.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Create portable archive
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force dist\portable | Out-Null
+          Copy-Item dist\winbloat.exe, dist\winbloat-gui.exe, README.md, LICENSE dist\portable
+          Compress-Archive -Path dist\portable\* -DestinationPath "dist\winbloat-portable-$env:APP_VERSION-x64.zip" -Force
+
+      - name: Create winget manifests
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          .github\scripts\New-WingetManifest.ps1 `
+            -Version $env:APP_VERSION `
+            -Repository $env:GITHUB_REPOSITORY `
+            -InstallerPath "dist\winbloat-setup-$env:APP_VERSION-x64.exe" `
+            -OutputPath "dist\winget"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist\winget\* -DestinationPath "dist\winbloat-winget-$env:APP_VERSION.zip" -Force
+
+      - name: Build Microsoft Store MSIX
+        id: msix
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.release.outputs.version }}
+          MSIX_PACKAGE_IDENTITY: ${{ vars.MSIX_PACKAGE_IDENTITY }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+        run: |
+          if (-not $env:MSIX_PACKAGE_IDENTITY -and -not $env:MSIX_PUBLISHER) {
+            "created=false" >> $env:GITHUB_OUTPUT
+            "MSIX skipped: set repository variables MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER from Partner Center." >> $env:GITHUB_STEP_SUMMARY
+            Write-Host "MSIX skipped. Configure MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER repository variables and rerun the release workflow."
+            exit 0
+          }
+          if (-not $env:MSIX_PACKAGE_IDENTITY -or -not $env:MSIX_PUBLISHER) {
+            throw "Both MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER repository variables are required."
+          }
+          .github\scripts\New-MsixPackage.ps1 `
+            -Version $env:APP_VERSION `
+            -Identity $env:MSIX_PACKAGE_IDENTITY `
+            -Publisher $env:MSIX_PUBLISHER `
+            -ExecutablePath "dist\winbloat-gui.exe" `
+            -OutputPath "dist\winbloat-$env:APP_VERSION-x64.msix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "created=true" >> $env:GITHUB_OUTPUT
+          "MSIX package created. Verify the Partner Center identity before submitting." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          "Direct-download Windows binaries are unsigned and may show a SmartScreen warning." >> $env:GITHUB_STEP_SUMMARY
+          Get-ChildItem dist -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $([System.IO.Path]::GetFileName($_.Path))" } |
+            Set-Content dist\SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.release.outputs.body }}
+          files: |
+            dist/winbloat.exe
+            dist/winbloat-gui.exe
+            dist/winbloat-setup-${{ steps.release.outputs.version }}-x64.exe
+            dist/winbloat-portable-${{ steps.release.outputs.version }}-x64.zip
+            dist/winbloat-winget-${{ steps.release.outputs.version }}.zip
+            dist/*.msix
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: false
