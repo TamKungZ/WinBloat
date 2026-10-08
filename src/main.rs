@@ -1,6 +1,8 @@
+mod analysis;
 mod cli;
 mod cli_ui;
 mod format;
+mod gui;
 mod scanner;
 mod tree;
 mod tui;
@@ -25,5 +27,6 @@ fn run() -> io::Result<()> {
     match args.mode {
         cli::Mode::List => cli_ui::run(&args, &root),
         cli::Mode::Tui => tui::run(&args, &root),
+        cli::Mode::Gui => gui::run(&root),
     }
 }

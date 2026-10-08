@@ -5,24 +5,44 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "WinBloat",
     version,
-    about = "Fast and memory-efficient disk analyzer",
+    about = "Fast, memory-efficient, read-only disk analyzer",
     long_about = None,
 )]
 pub struct Args {
     #[arg(default_value = ".", help = "Directory to scan")]
     pub path: PathBuf,
 
-    #[arg(short, long, value_enum, default_value_t = Mode::List, help = "Output mode")]
+    #[arg(short, long, value_enum, default_value_t = Mode::List, help = "Output mode: cli (read-only report), tui, or gui")]
     pub mode: Mode,
 
     #[arg(short = 'd', long, default_value_t = 2, help = "Maximum tree depth")]
     pub depth: usize,
 
-    #[arg(short = 'n', long, default_value_t = 20, help = "Number of largest files")]
+    #[arg(
+        short = 'n',
+        long,
+        default_value_t = 20,
+        help = "Number of largest files"
+    )]
     pub top: usize,
 
-    #[arg(short = 'r', long, default_value_t = 10, help = "Number of recently accessed files")]
+    #[arg(long, default_value_t = 10, help = "Number of largest directories")]
+    pub top_dirs: usize,
+
+    #[arg(
+        short = 'r',
+        long,
+        default_value_t = 10,
+        help = "Number of recently accessed files"
+    )]
     pub recent: usize,
+
+    #[arg(
+        long,
+        default_value_t = 10,
+        help = "Number of largest file types to show"
+    )]
+    pub types: usize,
 
     #[arg(long, default_value_t = 30, help = "Bar chart width")]
     pub bar_width: usize,
@@ -30,8 +50,14 @@ pub struct Args {
     #[arg(long, help = "Skip largest files section")]
     pub no_top: bool,
 
+    #[arg(long, help = "Skip largest directories section")]
+    pub no_top_dirs: bool,
+
     #[arg(long, help = "Skip recent files section")]
     pub no_recent: bool,
+
+    #[arg(long, help = "Skip file type summary")]
+    pub no_types: bool,
 
     #[arg(long, help = "Skip directory tree section")]
     pub no_tree: bool,
@@ -39,8 +65,10 @@ pub struct Args {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Mode {
+    #[value(alias = "cli")]
     List,
     Tui,
+    Gui,
 }
 
 pub fn parse() -> Args {
