@@ -1,15 +1,16 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$Repository,
-    [Parameter(Mandatory = $true)][string]$InstallerPath,
+    [Parameter(Mandatory = $true)][hashtable]$InstallerPaths,
     [Parameter(Mandatory = $true)][string]$OutputPath
 )
 
 $ErrorActionPreference = "Stop"
-$installer = Get-Item -LiteralPath $InstallerPath
-$sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash
-$downloadUrl = "https://github.com/$Repository/releases/download/v$Version/winbloat-setup-$Version-x64.exe"
-$productCode = "{2F760392-199C-4F6D-8FE1-0B4744A029B4}"
+$arches = @(
+    @{ Name = "x64"; Winget = "x64" },
+    @{ Name = "x86"; Winget = "x86" },
+    @{ Name = "arm64"; Winget = "arm64" }
+)
 $versionPath = Join-Path $OutputPath "t\TamKungZ\WinBloat\$Version"
 New-Item -ItemType Directory -Force -Path $versionPath | Out-Null
 
@@ -21,13 +22,16 @@ ManifestType: version
 ManifestVersion: 1.6.0
 "@ | Set-Content -Encoding utf8 (Join-Path $versionPath "TamKungZ.WinBloat.yaml")
 
+$installerEntries = foreach ($arch in $arches) {
+    $installerPath = $InstallerPaths[$arch.Name]
+    if (-not $installerPath -or -not (Test-Path -LiteralPath $installerPath)) {
+        throw "Missing $($arch.Name) installer: $installerPath"
+    }
+    $sha256 = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash
+    $installerName = "winbloat-setup-$Version-$($arch.Name).exe"
+    $downloadUrl = "https://github.com/$Repository/releases/download/v$Version/$installerName"
 @"
-PackageIdentifier: TamKungZ.WinBloat
-PackageVersion: $Version
-InstallerLocale: en-US
-MinimumOSVersion: 10.0.19041.0
-Installers:
-  - Architecture: x64
+  - Architecture: $($arch.Winget)
     InstallerType: inno
     Scope: machine
     InstallerUrl: $downloadUrl
@@ -36,7 +40,17 @@ Installers:
       Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
       SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART /SP-
     UpgradeBehavior: install
-    ProductCode: "$productCode"
+    ProductCode: "{2F760392-199C-4F6D-8FE1-0B4744A029B4}"
+"@
+}
+$installerEntries = $installerEntries -join "`n"
+@"
+PackageIdentifier: TamKungZ.WinBloat
+PackageVersion: $Version
+InstallerLocale: en-US
+MinimumOSVersion: 10.0.19041.0
+Installers:
+$installerEntries
 ManifestType: installer
 ManifestVersion: 1.6.0
 "@ | Set-Content -Encoding utf8 (Join-Path $versionPath "TamKungZ.WinBloat.installer.yaml")

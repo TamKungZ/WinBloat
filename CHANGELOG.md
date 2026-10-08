@@ -5,7 +5,8 @@
 ### Added
 - Native window with searchable file tree, item details, treemap, and file-type summary.
 - CLI summaries for large directories and file types.
-- Windows installer and package builds through GitHub Actions.
+- x64, x86, and ARM64 installers, portable ZIPs, winget manifests, and Store MSIX packages.
+- Detached GPG signatures for release files.
 
 ### Changed
 - CLI and GUI report read-only scanning and logical file sizes.

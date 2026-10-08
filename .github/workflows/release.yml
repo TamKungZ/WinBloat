@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to build and publish
+        required: true
 
 permissions:
   contents: write
@@ -13,14 +18,22 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Validate version and read release notes
         id: release
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          $tag = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { $env:RELEASE_TAG } else { $env:GITHUB_REF_NAME }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Expected a release tag in vMAJOR.MINOR.PATCH form, got $tag"
+          }
+          $version = $tag.Substring(1)
           $packageVersion = (Select-String -Path Cargo.toml -Pattern '^\s*version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
           if ($version -ne $packageVersion) {
             throw "Tag version $version does not match Cargo.toml version $packageVersion"
@@ -34,41 +47,64 @@ jobs:
           }
 
           "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
           "body<<RELEASE_NOTES" >> $env:GITHUB_OUTPUT
           $notes >> $env:GITHUB_OUTPUT
           "RELEASE_NOTES" >> $env:GITHUB_OUTPUT
 
-      - name: Test and build
+      - name: Test
         shell: pwsh
         run: |
           cargo test --locked
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --release --locked
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\release\winbloat.exe dist\winbloat.exe
-          Copy-Item target\release\winbloat-gui.exe dist\winbloat-gui.exe
 
-      - name: Build installer
+      - name: Build all Windows architectures
         shell: pwsh
         env:
           APP_VERSION: ${{ steps.release.outputs.version }}
         run: |
+          $architectures = @(
+            @{ Name = "x64"; Target = "x86_64-pc-windows-msvc" },
+            @{ Name = "x86"; Target = "i686-pc-windows-msvc" },
+            @{ Name = "arm64"; Target = "aarch64-pc-windows-msvc" }
+          )
+          New-Item -ItemType Directory -Force dist | Out-Null
           choco install innosetup --yes --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" | Select-Object -First 1
+          $iscc = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *\ISCC.exe" |
+            Select-Object -First 1
           if (-not $iscc) { throw "Inno Setup compiler was not found after installation." }
-          & $iscc.FullName installer\winbloat.iss
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Create portable archive
-        shell: pwsh
-        env:
-          APP_VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          New-Item -ItemType Directory -Force dist\portable | Out-Null
-          Copy-Item dist\winbloat.exe, dist\winbloat-gui.exe, README.md, LICENSE dist\portable
-          Compress-Archive -Path dist\portable\* -DestinationPath "dist\winbloat-portable-$env:APP_VERSION-x64.zip" -Force
+          foreach ($architecture in $architectures) {
+            rustup target add $architecture.Target
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo build --release --locked --target $architecture.Target
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+            $targetDir = Join-Path "target" "$($architecture.Target)\release"
+            $cli = Join-Path $targetDir "winbloat.exe"
+            $gui = Join-Path $targetDir "winbloat-gui.exe"
+            $cliAsset = "dist\winbloat-cli-$env:APP_VERSION-$($architecture.Name).exe"
+            $guiAsset = "dist\winbloat-gui-$env:APP_VERSION-$($architecture.Name).exe"
+            Copy-Item $cli $cliAsset
+            Copy-Item $gui $guiAsset
+
+            $portableDir = Join-Path $env:RUNNER_TEMP "portable-$($architecture.Name)"
+            New-Item -ItemType Directory -Force $portableDir | Out-Null
+            Copy-Item $cli (Join-Path $portableDir "winbloat.exe")
+            Copy-Item $gui (Join-Path $portableDir "winbloat-gui.exe")
+            Copy-Item README.md, LICENSE $portableDir
+            Compress-Archive `
+              -Path "$portableDir\*" `
+              -DestinationPath "dist\winbloat-portable-$env:APP_VERSION-$($architecture.Name).zip" `
+              -Force
+
+            $env:APP_ARCH = $architecture.Name
+            $env:CLI_PATH = (Resolve-Path $cli).Path
+            $env:GUI_PATH = (Resolve-Path $gui).Path
+            & $iscc.FullName installer\winbloat.iss
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
       - name: Create winget manifests
         shell: pwsh
@@ -78,13 +114,16 @@ jobs:
           .github\scripts\New-WingetManifest.ps1 `
             -Version $env:APP_VERSION `
             -Repository $env:GITHUB_REPOSITORY `
-            -InstallerPath "dist\winbloat-setup-$env:APP_VERSION-x64.exe" `
+            -InstallerPaths @{
+              x64 = "dist\winbloat-setup-$env:APP_VERSION-x64.exe"
+              x86 = "dist\winbloat-setup-$env:APP_VERSION-x86.exe"
+              arm64 = "dist\winbloat-setup-$env:APP_VERSION-arm64.exe"
+            } `
             -OutputPath "dist\winget"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path dist\winget\* -DestinationPath "dist\winbloat-winget-$env:APP_VERSION.zip" -Force
 
-      - name: Build Microsoft Store MSIX
-        id: msix
+      - name: Build Microsoft Store MSIX packages
         shell: pwsh
         env:
           APP_VERSION: ${{ steps.release.outputs.version }}
@@ -92,43 +131,70 @@ jobs:
           MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
         run: |
           if (-not $env:MSIX_PACKAGE_IDENTITY -and -not $env:MSIX_PUBLISHER) {
-            "created=false" >> $env:GITHUB_OUTPUT
             "MSIX skipped: set repository variables MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER from Partner Center." >> $env:GITHUB_STEP_SUMMARY
-            Write-Host "MSIX skipped. Configure MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER repository variables and rerun the release workflow."
+            Write-Host "MSIX skipped. Configure both Partner Center identity variables and rerun the release workflow."
             exit 0
           }
           if (-not $env:MSIX_PACKAGE_IDENTITY -or -not $env:MSIX_PUBLISHER) {
             throw "Both MSIX_PACKAGE_IDENTITY and MSIX_PUBLISHER repository variables are required."
           }
-          .github\scripts\New-MsixPackage.ps1 `
-            -Version $env:APP_VERSION `
-            -Identity $env:MSIX_PACKAGE_IDENTITY `
-            -Publisher $env:MSIX_PUBLISHER `
-            -ExecutablePath "dist\winbloat-gui.exe" `
-            -OutputPath "dist\winbloat-$env:APP_VERSION-x64.msix"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "created=true" >> $env:GITHUB_OUTPUT
-          "MSIX package created. Verify the Partner Center identity before submitting." >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Create checksums
+          foreach ($architecture in @(
+            @{ Name = "x64"; Target = "x86_64-pc-windows-msvc" },
+            @{ Name = "x86"; Target = "i686-pc-windows-msvc" },
+            @{ Name = "arm64"; Target = "aarch64-pc-windows-msvc" }
+          )) {
+            .github\scripts\New-MsixPackage.ps1 `
+              -Version $env:APP_VERSION `
+              -Identity $env:MSIX_PACKAGE_IDENTITY `
+              -Publisher $env:MSIX_PUBLISHER `
+              -Architecture $architecture.Name `
+              -ExecutablePath "target\$($architecture.Target)\release\winbloat-gui.exe" `
+              -OutputPath "dist\winbloat-$env:APP_VERSION-$($architecture.Name).msix"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          "MSIX packages created for x64, x86, and ARM64. Verify the Partner Center identity before submitting." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Create checksums and GPG signatures
         shell: pwsh
+        env:
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
         run: |
-          "Direct-download Windows binaries are unsigned and may show a SmartScreen warning." >> $env:GITHUB_STEP_SUMMARY
-          Get-ChildItem dist -File | Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+          if (-not $env:RELEASE_GPG_PRIVATE_KEY) {
+            throw "Set the RELEASE_GPG_PRIVATE_KEY repository secret to an armored private key before publishing."
+          }
+
+          Get-ChildItem dist -File |
             Get-FileHash -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $([System.IO.Path]::GetFileName($_.Path))" } |
             Set-Content dist\SHA256SUMS.txt
 
+          choco install gnupg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:RELEASE_GPG_PRIVATE_KEY | gpg --batch --import
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $passphraseFile = Join-Path $env:RUNNER_TEMP "winbloat-gpg-passphrase"
+          $passphrase = if ($null -eq $env:RELEASE_GPG_PASSPHRASE) { "" } else { $env:RELEASE_GPG_PASSPHRASE }
+          [System.IO.File]::WriteAllText($passphraseFile, $passphrase)
+          try {
+            Get-ChildItem dist -File | Where-Object { $_.Extension -ne ".asc" } | ForEach-Object {
+              $signature = "$($_.FullName).asc"
+              gpg --batch --yes --pinentry-mode loopback --passphrase-file $passphraseFile `
+                --armor --detach-sign --output $signature $_.FullName
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+          }
+          finally {
+            Remove-Item -LiteralPath $passphraseFile -Force -ErrorAction SilentlyContinue
+          }
+          "All release assets have detached ASCII-armored GPG signatures (.asc)." >> $env:GITHUB_STEP_SUMMARY
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release.outputs.tag }}
           body: ${{ steps.release.outputs.body }}
-          files: |
-            dist/winbloat.exe
-            dist/winbloat-gui.exe
-            dist/winbloat-setup-${{ steps.release.outputs.version }}-x64.exe
-            dist/winbloat-portable-${{ steps.release.outputs.version }}-x64.zip
-            dist/winbloat-winget-${{ steps.release.outputs.version }}.zip
-            dist/*.msix
-            dist/SHA256SUMS.txt
-          fail_on_unmatched_files: false
+          files: dist/*
+          fail_on_unmatched_files: true

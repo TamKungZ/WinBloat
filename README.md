@@ -14,8 +14,4 @@ winbloat --mode gui [PATH]     # Window with tree, details, and treemap
 
 Sizes are logical file sizes; allocated disk space and filesystem attributes are not collected.
 
-Windows releases include a setup installer and portable ZIP. The workflow also creates winget manifests. To build an MSIX, set the GitHub repository variables `MSIX_PACKAGE_IDENTITY` and `MSIX_PUBLISHER` to the values from Partner Center, then re-run the release workflow.
-
-Direct-download executables are unsigned; Windows may show a SmartScreen warning.
-
 Licensed under the [MIT License](LICENSE).

@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Version,
     [Parameter(Mandatory = $true)][string]$Identity,
     [Parameter(Mandatory = $true)][string]$Publisher,
+    [Parameter(Mandatory = $true)][ValidateSet("x86", "x64", "arm64")][string]$Architecture,
     [Parameter(Mandatory = $true)][string]$ExecutablePath,
     [Parameter(Mandatory = $true)][string]$OutputPath
 )
@@ -79,7 +80,7 @@ $manifest = @'
          xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
          xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
          IgnorableNamespaces="uap rescap">
-  <Identity Name="__IDENTITY__" Publisher="__PUBLISHER__" Version="__VERSION__" ProcessorArchitecture="x64" />
+  <Identity Name="__IDENTITY__" Publisher="__PUBLISHER__" Version="__VERSION__" ProcessorArchitecture="__ARCHITECTURE__" />
   <Properties>
     <DisplayName>WinBloat</DisplayName>
     <PublisherDisplayName>TamKungZ_</PublisherDisplayName>
@@ -109,6 +110,7 @@ $manifest = @'
 $manifest = $manifest.Replace("__IDENTITY__", [System.Security.SecurityElement]::Escape($Identity))
 $manifest = $manifest.Replace("__PUBLISHER__", [System.Security.SecurityElement]::Escape($Publisher))
 $manifest = $manifest.Replace("__VERSION__", $Version)
+$manifest = $manifest.Replace("__ARCHITECTURE__", $Architecture)
 Set-Content -LiteralPath (Join-Path $packageDir "AppxManifest.xml") -Value $manifest -Encoding utf8
 
 $sdkRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
